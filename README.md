@@ -1,4 +1,4 @@
-# Web Highlighter
+# Web Highlighter(网页荧光笔)
 
 一个用于 Chrome / Edge 的网页划线扩展，支持在网页中高亮文本、持久化保存、恢复高亮，并通过独立 dashboard 管理所有标记。
 
@@ -46,7 +46,6 @@
 
 - 所有高亮数据统一保存在扩展自己的 IndexedDB 中
 - dashboard 和内容页通过后台脚本访问同一份数据
-- 首次升级到 IndexedDB 版本时，会尝试迁移旧的 `chrome.storage.local.webHighlighterStore` 数据
 
 ## 项目结构
 
@@ -83,6 +82,6 @@
 - 评论区等复杂动态区域的兼容性仍可能因站点实现差异而不稳定
 - 右侧导航标记在高亮特别密集的区域会做聚合显示，而不是逐条完全展开
 
-## 文档维护
+## 维护
 
 - 功能、交互、存储方案或兼容性发生变化时，README 会同步更新
