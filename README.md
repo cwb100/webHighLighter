@@ -1,6 +1,7 @@
 # Web Highlighter
 
 一个用于 Chrome / Edge 的网页划线扩展，支持在网页中高亮文本、持久化保存、恢复高亮，并通过独立 dashboard 管理所有标记。
+![alt text](./assets/image1.png)
 
 ## 当前支持的功能
 
@@ -18,6 +19,7 @@
 - 页面右侧会显示与高亮颜色对应的导航标记
 - 点击右侧导航标记，可快速跳转到对应高亮位置
 - 右侧位置过近的多个高亮会聚合为一组导航标记
+![alt text](./assets/image2.png)
 - 提供独立 dashboard 页面，集中查看所有已保存的网页和标记
 - dashboard 支持点击单条标记，在新标签页打开对应网页
 - dashboard 支持删除单条高亮和清空某个页面的全部高亮
