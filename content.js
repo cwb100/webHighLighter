@@ -465,25 +465,102 @@
       quote,
       start,
       end,
+      startOffset: range.startOffset,
+      endOffset: range.endOffset,
+      startPath: getNodePath(range.startContainer),
+      endPath: getNodePath(range.endContainer),
       prefix: documentText.slice(Math.max(0, start - contextWindow), start),
       suffix: documentText.slice(end, end + contextWindow),
       createdAt: new Date().toISOString()
     };
 
-    wrapRange(range, id, color);
+    wrapRangeByTextNodes(range, id, color);
     await saveHighlight(record);
   }
 
-  function wrapRange(range, id, color) {
+  function wrapRangeByTextNodes(range, id, color) {
+    const textNodes = getTextNodesInRange(range);
+    for (let index = textNodes.length - 1; index >= 0; index -= 1) {
+      const node = textNodes[index];
+      const offsets = getTextNodeSelectionOffsets(range, node);
+      wrapTextSlice(node, offsets.startOffset, offsets.endOffset, id, color);
+    }
+  }
+
+  function getTextNodesInRange(range) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        const parent = node.parentElement;
+        if (parent && (parent.closest('#' + TOOLBAR_ID) || parent.closest('#' + ACTION_MENU_ID))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (parent && parent.closest('.' + HIGHLIGHT_CLASS)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        try {
+          return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+        } catch (error) {
+          return NodeFilter.FILTER_REJECT;
+        }
+      }
+    });
+
+    const nodes = [];
+    let current = walker.nextNode();
+    while (current) {
+      nodes.push(current);
+      current = walker.nextNode();
+    }
+    return nodes;
+  }
+
+  function getTextNodeSelectionOffsets(range, node) {
+    const startOffset = range.startContainer === node ? range.startOffset : 0;
+    const endOffset = range.endContainer === node ? range.endOffset : node.nodeValue.length;
+    return {
+      startOffset,
+      endOffset
+    };
+  }
+
+  function wrapTextSlice(node, startOffset, endOffset, id, color) {
+    if (!node || !node.nodeValue || startOffset >= endOffset) {
+      return null;
+    }
+
+    if (endOffset < node.nodeValue.length) {
+      node.splitText(endOffset);
+    }
+
+    let selectedNode = node;
+    if (startOffset > 0) {
+      selectedNode = node.splitText(startOffset);
+    }
+
+    return wrapTextNode(selectedNode, id, color);
+  }
+
+  function wrapTextNode(textNode, id, color) {
+    const parent = textNode.parentNode;
+    if (!parent) {
+      return null;
+    }
+
     const wrapper = document.createElement('span');
     wrapper.className = HIGHLIGHT_CLASS;
     wrapper.setAttribute(HIGHLIGHT_ATTR, id);
     wrapper.dataset.whColor = color;
     wrapper.style.backgroundColor = color;
 
-    const fragment = range.extractContents();
-    wrapper.appendChild(fragment);
-    range.insertNode(wrapper);
+    parent.insertBefore(wrapper, textNode);
+    wrapper.appendChild(textNode);
+    return wrapper;
   }
 
   function removeHighlightFromDom(highlightId) {
@@ -608,7 +685,7 @@
       if (!range) {
         continue;
       }
-      wrapRange(range, record.id, record.color);
+      wrapRangeByTextNodes(range, record.id, record.color);
     }
   }
 
@@ -616,6 +693,11 @@
     const body = document.body;
     if (!body || !record.quote) {
       return null;
+    }
+
+    const storedRange = locateRangeByStoredPaths(record);
+    if (storedRange && storedRange.toString() === record.quote) {
+      return storedRange;
     }
 
     const exact = locateRangeByOffsets(record.start, record.end);
@@ -643,6 +725,56 @@
     }
 
     return null;
+  }
+
+  function locateRangeByStoredPaths(record) {
+    if (!Array.isArray(record.startPath) || !Array.isArray(record.endPath)) {
+      return null;
+    }
+
+    const startNode = resolveNodePath(record.startPath);
+    const endNode = resolveNodePath(record.endPath);
+    if (!startNode || !endNode) {
+      return null;
+    }
+
+    const startOffset = clampBoundaryOffset(startNode, record.startOffset);
+    const endOffset = clampBoundaryOffset(endNode, record.endOffset);
+    if (startOffset == null || endOffset == null) {
+      return null;
+    }
+
+    try {
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.setEnd(endNode, endOffset);
+      return range;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function resolveNodePath(path) {
+    let current = document.body;
+    for (const index of path) {
+      if (!current || !current.childNodes || index < 0 || index >= current.childNodes.length) {
+        return null;
+      }
+      current = current.childNodes[index];
+    }
+    return current;
+  }
+
+  function clampBoundaryOffset(node, offset) {
+    if (typeof offset !== 'number') {
+      return null;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      return Math.max(0, Math.min(offset, node.nodeValue.length));
+    }
+
+    return Math.max(0, Math.min(offset, node.childNodes.length));
   }
 
   function contextScore(text, index, record) {
@@ -721,6 +853,28 @@
       end,
       text: range.toString()
     };
+  }
+
+  function getNodePath(node) {
+    const path = [];
+    let current = node;
+
+    while (current && current !== document.body) {
+      const parent = current.parentNode;
+      if (!parent) {
+        return null;
+      }
+
+      const index = Array.prototype.indexOf.call(parent.childNodes, current);
+      if (index < 0) {
+        return null;
+      }
+
+      path.unshift(index);
+      current = parent;
+    }
+
+    return path;
   }
 
   function offsetFromBoundary(root, container, boundaryOffset) {
