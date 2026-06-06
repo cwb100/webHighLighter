@@ -1,10 +1,12 @@
 (function () {
   const TOOLBAR_ID = 'wh-toolbar-host';
   const ACTION_MENU_ID = 'wh-action-menu-host';
+  const RAIL_ID = 'wh-rail-host';
   const HIGHLIGHT_ATTR = 'data-wh-id';
   const HIGHLIGHT_CLASS = 'wh-highlight';
   const STORE_REQUEST_EVENT = 'WH_STORE_REQUEST';
   const RESTORE_RETRY_LIMIT = 10;
+  const RAIL_GROUP_GAP = 10;
   const COLORS = [
     { name: 'Yellow', value: '#fff59d' },
     { name: 'Green', value: '#c8e6c9' },
@@ -17,10 +19,13 @@
   let toolbarShadow = null;
   let actionMenuHost = null;
   let actionMenuShadow = null;
+  let railHost = null;
+  let railShadow = null;
   let pendingRange = null;
   let activeHighlightId = null;
   let selectionTimer = null;
   let restoreTimer = null;
+  let railTimer = null;
   let restoreRetryCount = 0;
   let restoreInFlight = false;
   let currentPageUrl = normalizeUrl(location.href);
@@ -46,6 +51,7 @@
     window.addEventListener('scroll', hideActionMenu, true);
     window.addEventListener('resize', hideToolbar, true);
     window.addEventListener('resize', hideActionMenu, true);
+    window.addEventListener('resize', scheduleRailRender, true);
     document.addEventListener('visibilitychange', handleVisibilityChange, true);
     window.addEventListener('pageshow', handlePageShow, true);
     window.addEventListener('popstate', handleLocationMaybeChanged, true);
@@ -492,6 +498,7 @@
       title: document.title
     };
     await saveHighlight(page, record);
+    scheduleRailRender();
   }
 
   function bindNavigationTracking() {
@@ -521,6 +528,7 @@
 
     domObserver = new MutationObserver(() => {
       scheduleRestore(200, false);
+      scheduleRailRender();
     });
 
     domObserver.observe(document.documentElement, {
@@ -551,6 +559,7 @@
     currentPageUrl = nextPageUrl;
     restoreRetryCount = 0;
     clearAllHighlightsFromDom();
+    clearMarkerRail();
     hideActionMenu();
     hideToolbar();
     clearSelection();
@@ -643,6 +652,7 @@
     if (activeHighlightId === highlightId) {
       hideActionMenu();
     }
+    scheduleRailRender();
   }
 
   async function deleteHighlightById(highlightId) {
@@ -665,6 +675,7 @@
     getAllHighlightElements().forEach((element) => {
       unwrapElement(element);
     });
+    clearMarkerRail();
   }
 
   async function updateHighlightColor(highlightId, color) {
@@ -681,6 +692,7 @@
     if (highlight) {
       applyHighlightColorToDom(highlightId, color);
       hideActionMenu();
+      scheduleRailRender();
     }
   }
 
@@ -762,6 +774,8 @@
         wrapRangeByTextNodes(range, record.id, record.color);
       }
 
+      scheduleRailRender();
+
       if (pageUrl !== currentPageUrl) {
         return;
       }
@@ -780,6 +794,267 @@
 
   function hasHighlightInDom(highlightId) {
     return getHighlightElementsById(highlightId).length > 0;
+  }
+
+  function scheduleRailRender() {
+    if (railTimer) {
+      window.clearTimeout(railTimer);
+    }
+
+    railTimer = window.setTimeout(() => {
+      railTimer = null;
+      renderMarkerRail();
+    }, 80);
+  }
+
+  function ensureMarkerRail() {
+    if (railHost) {
+      return;
+    }
+
+    railHost = document.createElement('div');
+    railHost.id = RAIL_ID;
+    railHost.style.position = 'fixed';
+    railHost.style.top = '24px';
+    railHost.style.right = '6px';
+    railHost.style.bottom = '24px';
+    railHost.style.width = '18px';
+    railHost.style.zIndex = '2147483646';
+    railHost.style.pointerEvents = 'none';
+    railHost.style.display = 'none';
+
+    railShadow = railHost.attachShadow({ mode: 'open' });
+    railShadow.innerHTML = `
+      <style>
+        .rail {
+          position: relative;
+          height: 100%;
+          width: 100%;
+          pointer-events: none;
+        }
+        .track {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          left: 50%;
+          width: 2px;
+          transform: translateX(-50%);
+          border-radius: 999px;
+          background: rgba(17, 24, 39, 0.08);
+        }
+        .marker {
+          position: absolute;
+          left: 50%;
+          width: 12px;
+          min-height: 12px;
+          transform: translate(-50%, -50%);
+          border: 1px solid rgba(17, 24, 39, 0.18);
+          border-radius: 999px;
+          box-shadow: 0 4px 10px rgba(17, 24, 39, 0.16);
+          cursor: pointer;
+          pointer-events: auto;
+        }
+        .marker:hover {
+          width: 14px;
+          min-height: 14px;
+        }
+        .marker.grouped::after {
+          content: attr(data-count);
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font: 9px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #111827;
+          font-weight: 700;
+        }
+      </style>
+      <div class="rail">
+        <div class="track"></div>
+        <div id="markers"></div>
+      </div>
+    `;
+
+    railShadow.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      const marker = target.closest('.marker');
+      if (!(marker instanceof HTMLElement)) {
+        return;
+      }
+
+      const highlightId = marker.getAttribute('data-highlight-id');
+      if (!highlightId) {
+        return;
+      }
+
+      scrollToHighlight(highlightId);
+    });
+
+    document.documentElement.appendChild(railHost);
+  }
+
+  function clearMarkerRail() {
+    if (!railHost || !railShadow) {
+      return;
+    }
+
+    const markers = railShadow.getElementById('markers');
+    if (markers) {
+      markers.innerHTML = '';
+    }
+    railHost.style.display = 'none';
+  }
+
+  function renderMarkerRail() {
+    const entries = collectMarkerEntries();
+    if (entries.length === 0) {
+      clearMarkerRail();
+      return;
+    }
+
+    ensureMarkerRail();
+    const markers = railShadow.getElementById('markers');
+    if (!markers) {
+      return;
+    }
+
+    const railHeight = Math.max(120, railHost.clientHeight || window.innerHeight - 48);
+    const groups = groupMarkerEntries(entries, railHeight);
+    markers.innerHTML = groups.map((group) => renderMarkerGroup(group)).join('');
+    railHost.style.display = 'block';
+  }
+
+  function collectMarkerEntries() {
+    const entries = [];
+    const seen = new Set();
+
+    for (const element of getAllHighlightElements()) {
+      const highlightId = element.getAttribute(HIGHLIGHT_ATTR);
+      if (!highlightId || seen.has(highlightId)) {
+        continue;
+      }
+
+      const firstElement = getPrimaryHighlightElement(highlightId);
+      if (!firstElement) {
+        continue;
+      }
+
+      seen.add(highlightId);
+      const color = normalizeColorValue(firstElement.getAttribute('data-wh-color') || firstElement.style.backgroundColor || COLORS[0].value);
+      entries.push({
+        highlightId,
+        color,
+        offset: getElementDocumentOffset(firstElement)
+      });
+    }
+
+    entries.sort((left, right) => left.offset - right.offset);
+    return entries;
+  }
+
+  function getPrimaryHighlightElement(highlightId) {
+    const elements = getHighlightElementsById(highlightId);
+    if (elements.length === 0) {
+      return null;
+    }
+
+    return elements
+      .slice()
+      .sort((left, right) => getElementDocumentOffset(left) - getElementDocumentOffset(right))[0];
+  }
+
+  function groupMarkerEntries(entries, railHeight) {
+    const scrollableHeight = Math.max(1, getScrollableHeight());
+    const groups = [];
+
+    for (const entry of entries) {
+      const ratio = clamp(entry.offset / scrollableHeight, 0, 1);
+      const topPx = Math.max(6, ratio * railHeight);
+      const lastGroup = groups[groups.length - 1];
+
+      if (lastGroup && Math.abs(lastGroup.topPx - topPx) < RAIL_GROUP_GAP) {
+        lastGroup.entries.push(entry);
+        lastGroup.topPx = (lastGroup.topPx * (lastGroup.entries.length - 1) + topPx) / lastGroup.entries.length;
+        continue;
+      }
+
+      groups.push({
+        topPx,
+        entries: [entry]
+      });
+    }
+
+    return groups;
+  }
+
+  function renderMarkerGroup(group) {
+    const first = group.entries[0];
+    const uniqueColors = [...new Set(group.entries.map((entry) => entry.color))];
+    const background = uniqueColors.length === 1
+      ? uniqueColors[0]
+      : `linear-gradient(180deg, ${uniqueColors.slice(0, 4).join(', ')})`;
+    const isGrouped = group.entries.length > 1;
+
+    return `
+      <button
+        type="button"
+        class="marker${isGrouped ? ' grouped' : ''}"
+        data-highlight-id="${escapeHtml(first.highlightId)}"
+        data-count="${isGrouped ? escapeHtml(String(group.entries.length)) : ''}"
+        style="top:${group.topPx}px;background:${escapeHtml(background)}"
+        title="${escapeHtml(isGrouped ? `${group.entries.length} 条标记` : '跳转到标记')}"
+      ></button>
+    `;
+  }
+
+  function scrollToHighlight(highlightId) {
+    const target = getPrimaryHighlightElement(highlightId);
+    if (!target) {
+      return;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const targetTop = rect.top + window.scrollY - (window.innerHeight / 2) + (rect.height / 2);
+    window.scrollTo({
+      top: Math.max(0, targetTop),
+      behavior: 'smooth'
+    });
+    flashHighlight(target);
+  }
+
+  function flashHighlight(element) {
+    const previousTransition = element.style.transition;
+    const previousBoxShadow = element.style.boxShadow;
+    element.style.transition = 'box-shadow 180ms ease';
+    element.style.boxShadow = '0 0 0 3px rgba(37, 99, 235, 0.55)';
+    window.setTimeout(() => {
+      element.style.boxShadow = previousBoxShadow;
+      element.style.transition = previousTransition;
+    }, 900);
+  }
+
+  function getScrollableHeight() {
+    const doc = document.documentElement;
+    const body = document.body;
+    const scrollHeight = Math.max(
+      doc ? doc.scrollHeight : 0,
+      body ? body.scrollHeight : 0
+    );
+    return Math.max(1, scrollHeight - window.innerHeight);
+  }
+
+  function getElementDocumentOffset(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.top + window.scrollY;
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
   }
 
   function findRangeForRecord(record) {

@@ -55,22 +55,41 @@ body {
   box-shadow: 0 8px 24px rgba(17, 24, 39, 0.06);
 }
 
-.search-label {
-  display: block;
-  margin-bottom: 10px;
+.search-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.search-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.search-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.search-field {
+  display: grid;
+  gap: 8px;
+}
+
+.search-field-wide {
+  grid-column: 1 / -1;
+}
+
+.search-field span {
   font-size: 13px;
   font-weight: 600;
   color: #374151;
 }
 
-.search-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.search-row input {
-  flex: 1;
+.search-field input {
   min-width: 0;
   padding: 11px 14px;
   border: 1px solid #d1d5db;
@@ -80,13 +99,13 @@ body {
   background: #fff;
 }
 
-.search-row input:focus {
+.search-field input:focus {
   outline: none;
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
-.search-row button {
+.search-title-row button {
   border: 1px solid #d1d5db;
   border-radius: 12px;
   padding: 10px 14px;
@@ -183,6 +202,14 @@ body {
   border: 1px solid #e5e7eb;
   border-radius: 12px;
   background: #fafafa;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.highlight-item:hover {
+  border-color: #bfdbfe;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.08);
+  transform: translateY(-1px);
 }
 
 .highlight-main {
@@ -215,6 +242,7 @@ body {
   display: flex;
   gap: 8px;
   align-items: start;
+  flex-shrink: 0;
 }
 
 .item-actions button,
@@ -238,4 +266,34 @@ body {
   background: #fff;
   color: #6b7280;
   text-align: center;
+}
+
+@media (max-width: 920px) {
+  body {
+    min-width: 0;
+  }
+
+  .header,
+  .main {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .summary,
+  .search-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .search-title-row,
+  .page-head,
+  .highlight-item {
+    align-items: stretch;
+  }
+
+  .search-title-row,
+  .page-head,
+  .highlight-item,
+  .page-actions {
+    flex-direction: column;
+  }
 }

@@ -19,13 +19,36 @@
 
   <main class="main">
     <section class="search-card">
-      <label class="search-label" for="search-input">搜索标记</label>
-      <div class="search-row">
-        <input id="search-input" type="search" placeholder="title:文章 url:example.com text:重点 color:#fff59d date:2026-06-06" autocomplete="off">
-        <button id="clear-search-btn" type="button">清空</button>
+      <div class="search-title-row">
+        <h2 class="search-title">搜索标记</h2>
+        <button id="clear-search-btn" type="button">清空筛选</button>
       </div>
+
+      <div class="search-grid">
+        <label class="search-field">
+          <span>标题</span>
+          <input id="filter-title" type="search" placeholder="按页面标题筛选" autocomplete="off">
+        </label>
+        <label class="search-field">
+          <span>网址</span>
+          <input id="filter-url" type="search" placeholder="按网址筛选" autocomplete="off">
+        </label>
+        <label class="search-field search-field-wide">
+          <span>标记文本</span>
+          <input id="filter-text" type="search" placeholder="按高亮文本筛选" autocomplete="off">
+        </label>
+        <label class="search-field">
+          <span>颜色</span>
+          <input id="filter-color" type="search" placeholder="#fff59d" autocomplete="off">
+        </label>
+        <label class="search-field">
+          <span>日期</span>
+          <input id="filter-date" type="date">
+        </label>
+      </div>
+
       <div class="search-help">
-        支持标签：<code>title:</code> <code>url:</code> <code>text:</code> <code>color:</code> <code>date:</code>，不带标签时默认同时匹配标题、URL 和划线文本。
+        点击标记可在新标签页打开对应网页；筛选条件为空时会被忽略，多个条件会同时生效。
       </div>
     </section>
 

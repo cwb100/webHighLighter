@@ -3,30 +3,43 @@
   const pageCountEl = document.getElementById('page-count');
   const highlightCountEl = document.getElementById('highlight-count');
   const refreshBtn = document.getElementById('refresh-btn');
-  const searchInput = document.getElementById('search-input');
   const clearSearchBtn = document.getElementById('clear-search-btn');
+  const filterTitleInput = document.getElementById('filter-title');
+  const filterUrlInput = document.getElementById('filter-url');
+  const filterTextInput = document.getElementById('filter-text');
+  const filterColorInput = document.getElementById('filter-color');
+  const filterDateInput = document.getElementById('filter-date');
   const STORE_UPDATED_EVENT = 'WH_STORE_UPDATED';
 
-  const SEARCHABLE_TAGS = new Set(['title', 'url', 'text', 'color', 'date']);
-  const DEFAULT_SEARCH_FIELDS = ['title', 'url', 'text'];
   const EMPTY_HTML = '<div class="empty">还没有任何网页被划线。</div>';
   const NO_MATCH_HTML = '<div class="empty">没有匹配的标记。</div>';
   const LOAD_ERROR_HTML = '<div class="empty">加载划线数据失败。</div>';
   const EMPTY_PAGE_HIGHLIGHTS_HTML = '<div class="empty">这一页还没有具体标记。</div>';
 
-  let queryText = '';
+  const filters = {
+    title: '',
+    url: '',
+    text: '',
+    color: '',
+    date: ''
+  };
+
   let renderTimer = null;
 
   refreshBtn.addEventListener('click', render);
-  searchInput.addEventListener('input', handleSearchInput);
-  clearSearchBtn.addEventListener('click', handleClearSearch);
+  clearSearchBtn.addEventListener('click', handleClearFilters);
+  filterTitleInput.addEventListener('input', handleFilterInput);
+  filterUrlInput.addEventListener('input', handleFilterInput);
+  filterTextInput.addEventListener('input', handleFilterInput);
+  filterColorInput.addEventListener('input', handleFilterInput);
+  filterDateInput.addEventListener('input', handleFilterInput);
   chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   render();
 
   async function render() {
     try {
       const pages = await webHighlighterStore.getPagesWithHighlights();
-      const filteredPages = filterPages(pages, parseQuery(queryText));
+      const filteredPages = filterPages(pages, filters);
 
       pageCountEl.textContent = String(filteredPages.length);
       highlightCountEl.textContent = String(
@@ -51,14 +64,28 @@
     }
   }
 
-  function handleSearchInput(event) {
-    queryText = event.target.value || '';
+  function handleFilterInput() {
+    filters.title = normalizeSearchValue(filterTitleInput.value);
+    filters.url = normalizeSearchValue(filterUrlInput.value);
+    filters.text = normalizeSearchValue(filterTextInput.value);
+    filters.color = normalizeSearchValue(filterColorInput.value);
+    filters.date = normalizeDateValue(filterDateInput.value);
     scheduleRender();
   }
 
-  function handleClearSearch() {
-    queryText = '';
-    searchInput.value = '';
+  function handleClearFilters() {
+    filters.title = '';
+    filters.url = '';
+    filters.text = '';
+    filters.color = '';
+    filters.date = '';
+
+    filterTitleInput.value = '';
+    filterUrlInput.value = '';
+    filterTextInput.value = '';
+    filterColorInput.value = '';
+    filterDateInput.value = '';
+
     scheduleRender();
   }
 
@@ -107,7 +134,7 @@
   function renderHighlightItem(pageKey, highlight) {
     const createdDate = formatHighlightDate(highlight.createdAt);
     return `
-      <div class="highlight-item" data-highlight-id="${escapeHtml(highlight.id)}" data-page-key="${escapeHtml(pageKey)}">
+      <div class="highlight-item" data-open-page="${escapeHtml(pageKey)}" data-highlight-id="${escapeHtml(highlight.id)}" data-page-key="${escapeHtml(pageKey)}">
         <div class="highlight-main">
           <p class="highlight-quote">${escapeHtml(highlight.quote || '')}</p>
           <div class="highlight-sub">
@@ -125,7 +152,8 @@
 
   function bindActions() {
     document.querySelectorAll('[data-delete-highlight]').forEach((button) => {
-      button.addEventListener('click', async () => {
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
         const pageKey = button.getAttribute('data-page-key');
         const highlightId = button.getAttribute('data-delete-highlight');
         if (!pageKey || !highlightId) {
@@ -142,6 +170,34 @@
           return;
         }
         await clearPage(pageKey);
+      });
+    });
+
+    document.querySelectorAll('[data-open-page]').forEach((item) => {
+      item.addEventListener('click', async (event) => {
+        const target = event.target;
+        if (target instanceof Element && target.closest('[data-delete-highlight]')) {
+          return;
+        }
+
+        const url = item.getAttribute('data-open-page');
+        if (!url) {
+          return;
+        }
+
+        await openPage(url);
+      });
+    });
+  }
+
+  async function openPage(url) {
+    return new Promise((resolve) => {
+      chrome.tabs.create({ url }, () => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          console.error('Failed to open page from dashboard:', error);
+        }
+        resolve();
       });
     });
   }
@@ -197,53 +253,14 @@
     });
   }
 
-  function parseQuery(query) {
-    const terms = String(query || '')
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .map(parseTerm)
-      .filter((term) => term && term.value);
-
-    return { terms };
-  }
-
-  function parseTerm(token) {
-    const separatorIndex = token.indexOf(':');
-    if (separatorIndex <= 0) {
-      return createDefaultTerm(token);
-    }
-
-    const field = token.slice(0, separatorIndex).toLowerCase();
-    const rawValue = token.slice(separatorIndex + 1);
-
-    if (!SEARCHABLE_TAGS.has(field) || !rawValue.trim()) {
-      return createDefaultTerm(token);
-    }
-
-    return {
-      type: 'field',
-      field,
-      value: normalizeSearchValue(rawValue)
-    };
-  }
-
-  function createDefaultTerm(value) {
-    return {
-      type: 'default',
-      fields: DEFAULT_SEARCH_FIELDS,
-      value: normalizeSearchValue(value)
-    };
-  }
-
-  function filterPages(pages, query) {
-    if (!query.terms.length) {
+  function filterPages(pages, activeFilters) {
+    if (!hasActiveFilters(activeFilters)) {
       return pages;
     }
 
     const results = [];
     for (const page of pages) {
-      const highlights = filterHighlightsForPage(page, query.terms);
+      const highlights = filterHighlightsForPage(page, activeFilters);
       if (highlights.length === 0) {
         continue;
       }
@@ -256,34 +273,37 @@
     return results;
   }
 
-  function filterHighlightsForPage(page, terms) {
+  function hasActiveFilters(activeFilters) {
+    return Object.values(activeFilters).some(Boolean);
+  }
+
+  function filterHighlightsForPage(page, activeFilters) {
     const highlights = Array.isArray(page.highlights) ? page.highlights : [];
-    return highlights.filter((highlight) => terms.every((term) => matchesTerm(page, highlight, term)));
+    return highlights.filter((highlight) => matchesFilters(page, highlight, activeFilters));
   }
 
-  function matchesTerm(page, highlight, term) {
-    if (term.type === 'default') {
-      return term.fields.some((field) => matchFieldValue(page, highlight, field, term.value));
+  function matchesFilters(page, highlight, activeFilters) {
+    if (activeFilters.title && !normalizeSearchValue(page.title).includes(activeFilters.title)) {
+      return false;
     }
 
-    return matchFieldValue(page, highlight, term.field, term.value);
-  }
-
-  function matchFieldValue(page, highlight, field, value) {
-    switch (field) {
-      case 'title':
-        return normalizeSearchValue(page.title).includes(value);
-      case 'url':
-        return normalizeSearchValue(page.url).includes(value);
-      case 'text':
-        return normalizeSearchValue(highlight.quote).includes(value);
-      case 'color':
-        return normalizeSearchValue(highlight.color).includes(value);
-      case 'date':
-        return formatHighlightDate(highlight.createdAt) === value;
-      default:
-        return false;
+    if (activeFilters.url && !normalizeSearchValue(page.url).includes(activeFilters.url)) {
+      return false;
     }
+
+    if (activeFilters.text && !normalizeSearchValue(highlight.quote).includes(activeFilters.text)) {
+      return false;
+    }
+
+    if (activeFilters.color && !normalizeSearchValue(highlight.color).includes(activeFilters.color)) {
+      return false;
+    }
+
+    if (activeFilters.date && formatHighlightDate(highlight.createdAt) !== activeFilters.date) {
+      return false;
+    }
+
+    return true;
   }
 
   function formatHighlightDate(value) {
@@ -291,6 +311,10 @@
       return '';
     }
     return value.slice(0, 10);
+  }
+
+  function normalizeDateValue(value) {
+    return String(value || '').trim();
   }
 
   function normalizeSearchValue(value) {
