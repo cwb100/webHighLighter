@@ -4,6 +4,7 @@
   const HIGHLIGHT_ATTR = 'data-wh-id';
   const HIGHLIGHT_CLASS = 'wh-highlight';
   const STORE_REQUEST_EVENT = 'WH_STORE_REQUEST';
+  const RESTORE_RETRY_LIMIT = 10;
   const COLORS = [
     { name: 'Yellow', value: '#fff59d' },
     { name: 'Green', value: '#c8e6c9' },
@@ -19,15 +20,20 @@
   let pendingRange = null;
   let activeHighlightId = null;
   let selectionTimer = null;
+  let restoreTimer = null;
+  let restoreRetryCount = 0;
+  let restoreInFlight = false;
+  let currentPageUrl = normalizeUrl(location.href);
+  let domObserver = null;
 
   init();
 
   function init() {
     injectStyles();
-    void restoreHighlights().catch((error) => {
-      console.error('Failed to restore highlights:', error);
-    });
     bindEvents();
+    bindNavigationTracking();
+    bindDomObserver();
+    scheduleRestore(0, true);
   }
 
   function bindEvents() {
@@ -40,6 +46,10 @@
     window.addEventListener('scroll', hideActionMenu, true);
     window.addEventListener('resize', hideToolbar, true);
     window.addEventListener('resize', hideActionMenu, true);
+    document.addEventListener('visibilitychange', handleVisibilityChange, true);
+    window.addEventListener('pageshow', handlePageShow, true);
+    window.addEventListener('popstate', handleLocationMaybeChanged, true);
+    window.addEventListener('hashchange', handleLocationMaybeChanged, true);
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!message || typeof message !== 'object') {
@@ -96,7 +106,7 @@
     }
 
     const range = selection.getRangeAt(0);
-    if (!document.body.contains(range.commonAncestorContainer)) {
+    if (!isWithinPage(range.commonAncestorContainer)) {
       return null;
     }
 
@@ -116,12 +126,12 @@
   }
 
   function isWithinToolbar(node) {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const element = getClosestElement(node);
     return Boolean(element && element.closest && element.closest('#' + TOOLBAR_ID));
   }
 
   function isWithinActionMenu(node) {
-    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    const element = getClosestElement(node);
     return Boolean(element && element.closest && element.closest('#' + ACTION_MENU_ID));
   }
 
@@ -259,7 +269,7 @@
   }
 
   function getHighlightElementFromTarget(target) {
-    const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+    const element = getClosestElement(target);
     if (!element || !element.closest) {
       return null;
     }
@@ -484,6 +494,86 @@
     await saveHighlight(page, record);
   }
 
+  function bindNavigationTracking() {
+    patchHistoryMethod('pushState');
+    patchHistoryMethod('replaceState');
+  }
+
+  function patchHistoryMethod(methodName) {
+    const original = history[methodName];
+    if (typeof original !== 'function' || original.__whPatched) {
+      return;
+    }
+
+    const wrapped = function (...args) {
+      const result = original.apply(this, args);
+      handleLocationMaybeChanged();
+      return result;
+    };
+    wrapped.__whPatched = true;
+    history[methodName] = wrapped;
+  }
+
+  function bindDomObserver() {
+    if (!(window.MutationObserver && document.documentElement)) {
+      return;
+    }
+
+    domObserver = new MutationObserver(() => {
+      scheduleRestore(200, false);
+    });
+
+    domObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+  }
+
+  function handleVisibilityChange() {
+    if (document.visibilityState === 'visible') {
+      handleLocationMaybeChanged();
+      scheduleRestore(100, false);
+    }
+  }
+
+  function handlePageShow() {
+    handleLocationMaybeChanged();
+    scheduleRestore(100, false);
+  }
+
+  function handleLocationMaybeChanged() {
+    const nextPageUrl = normalizeUrl(location.href);
+    if (nextPageUrl === currentPageUrl) {
+      return;
+    }
+
+    currentPageUrl = nextPageUrl;
+    restoreRetryCount = 0;
+    clearAllHighlightsFromDom();
+    hideActionMenu();
+    hideToolbar();
+    clearSelection();
+    scheduleRestore(100, true);
+  }
+
+  function scheduleRestore(delay, resetRetries) {
+    if (resetRetries) {
+      restoreRetryCount = 0;
+    }
+
+    if (restoreTimer) {
+      window.clearTimeout(restoreTimer);
+    }
+
+    restoreTimer = window.setTimeout(() => {
+      restoreTimer = null;
+      void restoreHighlights().catch((error) => {
+        console.error('Failed to restore highlights:', error);
+      });
+    }, delay);
+  }
+
   function wrapRangeByTextNodes(range, id, color) {
     const textNodes = getTextNodesInRange(range);
     for (let index = textNodes.length - 1; index >= 0; index -= 1) {
@@ -494,36 +584,13 @@
   }
 
   function getTextNodesInRange(range) {
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        const parent = node.parentElement;
-        if (parent && (parent.closest('#' + TOOLBAR_ID) || parent.closest('#' + ACTION_MENU_ID))) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        if (parent && parent.closest('.' + HIGHLIGHT_CLASS)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-
-        try {
-          return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-        } catch (error) {
-          return NodeFilter.FILTER_REJECT;
-        }
+    return getAllTextNodes().filter((node) => {
+      try {
+        return range.intersectsNode(node);
+      } catch (error) {
+        return false;
       }
     });
-
-    const nodes = [];
-    let current = walker.nextNode();
-    while (current) {
-      nodes.push(current);
-      current = walker.nextNode();
-    }
-    return nodes;
   }
 
   function getTextNodeSelectionOffsets(range, node) {
@@ -570,8 +637,7 @@
   }
 
   function removeHighlightFromDom(highlightId) {
-    const selector = `span[${HIGHLIGHT_ATTR}="${CSS.escape(highlightId)}"]`;
-    document.querySelectorAll(selector).forEach((element) => {
+    getHighlightElementsById(highlightId).forEach((element) => {
       unwrapElement(element);
     });
     if (activeHighlightId === highlightId) {
@@ -595,6 +661,12 @@
     }
   }
 
+  function clearAllHighlightsFromDom() {
+    getAllHighlightElements().forEach((element) => {
+      unwrapElement(element);
+    });
+  }
+
   async function updateHighlightColor(highlightId, color) {
     if (!highlightId || !color) {
       return;
@@ -613,8 +685,7 @@
   }
 
   function applyHighlightColorToDom(highlightId, color) {
-    const selector = `span[${HIGHLIGHT_ATTR}="${CSS.escape(highlightId)}"]`;
-    document.querySelectorAll(selector).forEach((element) => {
+    getHighlightElementsById(highlightId).forEach((element) => {
       element.dataset.whColor = color;
       element.style.backgroundColor = color;
     });
@@ -662,20 +733,53 @@
   }
 
   async function restoreHighlights() {
-    const highlights = await callStore('getHighlightsForPage', {
-      pageUrl: normalizeUrl(location.href)
-    });
-    if (!Array.isArray(highlights) || highlights.length === 0) {
+    if (restoreInFlight) {
       return;
     }
 
-    for (const record of highlights) {
-      const range = findRangeForRecord(record);
-      if (!range) {
-        continue;
+    restoreInFlight = true;
+    const pageUrl = currentPageUrl;
+
+    try {
+      const highlights = await callStore('getHighlightsForPage', {
+        pageUrl
+      });
+      if (!Array.isArray(highlights) || highlights.length === 0) {
+        return;
       }
-      wrapRangeByTextNodes(range, record.id, record.color);
+
+      let missingCount = 0;
+      for (const record of highlights) {
+        if (hasHighlightInDom(record.id)) {
+          continue;
+        }
+
+        const range = findRangeForRecord(record);
+        if (!range) {
+          missingCount += 1;
+          continue;
+        }
+        wrapRangeByTextNodes(range, record.id, record.color);
+      }
+
+      if (pageUrl !== currentPageUrl) {
+        return;
+      }
+
+      if (missingCount > 0 && restoreRetryCount < RESTORE_RETRY_LIMIT) {
+        restoreRetryCount += 1;
+        scheduleRestore(500, false);
+        return;
+      }
+
+      restoreRetryCount = 0;
+    } finally {
+      restoreInFlight = false;
     }
+  }
+
+  function hasHighlightInDom(highlightId) {
+    return getHighlightElementsById(highlightId).length > 0;
   }
 
   function findRangeForRecord(record) {
@@ -807,29 +911,15 @@
   }
 
   function locateDomPosition(root, targetOffset) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (node.parentElement && node.parentElement.closest('#' + TOOLBAR_ID)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
+    const segments = collectTextSegments(root).segments;
+    for (const segment of segments) {
+      if (targetOffset <= segment.end) {
+        return {
+          node: segment.node,
+          offset: Math.max(0, targetOffset - segment.start)
+        };
       }
-    });
-
-    let offset = 0;
-    let node = walker.nextNode();
-    while (node) {
-      const nextOffset = offset + node.nodeValue.length;
-      if (targetOffset <= nextOffset) {
-        return { node, offset: Math.max(0, targetOffset - offset) };
-      }
-      offset = nextOffset;
-      node = walker.nextNode();
     }
-
     return null;
   }
 
@@ -845,6 +935,10 @@
   }
 
   function getNodePath(node) {
+    if (node && node.getRootNode && node.getRootNode() instanceof ShadowRoot) {
+      return null;
+    }
+
     const path = [];
     let current = node;
 
@@ -867,10 +961,17 @@
   }
 
   function offsetFromBoundary(root, container, boundaryOffset) {
-    const range = document.createRange();
-    range.selectNodeContents(root);
-    range.setEnd(container, boundaryOffset);
-    return range.toString().length;
+    const segments = collectTextSegments(root).segments;
+    let offset = 0;
+
+    for (const segment of segments) {
+      if (segment.node === container) {
+        return offset + Math.max(0, Math.min(boundaryOffset, segment.node.nodeValue.length));
+      }
+      offset = segment.end;
+    }
+
+    return offset;
   }
 
   function getDocumentText() {
@@ -878,28 +979,148 @@
   }
 
   function collectTextSegments(root) {
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode(node) {
-        if (!node.nodeValue) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        if (node.parentElement && node.parentElement.closest('#' + TOOLBAR_ID)) {
-          return NodeFilter.FILTER_REJECT;
-        }
-        return NodeFilter.FILTER_ACCEPT;
-      }
-    });
-
     const segments = [];
     let text = '';
-    let node = walker.nextNode();
-    while (node) {
+    for (const node of getAllTextNodes(root)) {
       const start = text.length;
       text += node.nodeValue;
       segments.push({ node, start, end: text.length });
-      node = walker.nextNode();
     }
     return { segments, text };
+  }
+
+  function getAllTextNodes(root) {
+    const nodes = [];
+    walkTextNodes(root || document.body, nodes);
+    return nodes;
+  }
+
+  function walkTextNodes(node, result) {
+    if (!node) {
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE) {
+      if (shouldIncludeTextNode(node)) {
+        result.push(node);
+      }
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+      return;
+    }
+
+    const childNodes = Array.from(node.childNodes || []);
+    for (const child of childNodes) {
+      walkTextNodes(child, result);
+    }
+
+    if (node instanceof Element && node.shadowRoot) {
+      walkTextNodes(node.shadowRoot, result);
+    }
+  }
+
+  function shouldIncludeTextNode(node) {
+    if (!node || !node.nodeValue) {
+      return false;
+    }
+
+    const element = getClosestElement(node);
+    if (!element) {
+      return false;
+    }
+
+    if (element.closest('#' + TOOLBAR_ID) || element.closest('#' + ACTION_MENU_ID)) {
+      return false;
+    }
+
+    if (element.closest('.' + HIGHLIGHT_CLASS)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function getAllHighlightElements() {
+    const elements = [];
+    walkHighlightElements(document.body, elements);
+    return elements;
+  }
+
+  function walkHighlightElements(node, result) {
+    if (!node) {
+      return;
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+      return;
+    }
+
+    const childNodes = Array.from(node.childNodes || []);
+    for (const child of childNodes) {
+      if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.classList.contains(HIGHLIGHT_CLASS) && child.hasAttribute(HIGHLIGHT_ATTR)) {
+          result.push(child);
+        }
+        walkHighlightElements(child, result);
+      }
+    }
+
+    if (node instanceof Element && node.shadowRoot) {
+      walkHighlightElements(node.shadowRoot, result);
+    }
+  }
+
+  function getHighlightElementsById(highlightId) {
+    return getAllHighlightElements().filter((element) => element.getAttribute(HIGHLIGHT_ATTR) === highlightId);
+  }
+
+  function getClosestElement(node) {
+    if (!node) {
+      return null;
+    }
+
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      return node;
+    }
+
+    if (node.parentElement) {
+      return node.parentElement;
+    }
+
+    const root = node.getRootNode && node.getRootNode();
+    if (root instanceof ShadowRoot) {
+      return root.host || null;
+    }
+
+    return null;
+  }
+
+  function isWithinPage(node) {
+    if (!node) {
+      return false;
+    }
+
+    if (document.body.contains(node)) {
+      return true;
+    }
+
+    let current = node;
+    while (current) {
+      const root = current.getRootNode && current.getRootNode();
+      if (!(root instanceof ShadowRoot) || !root.host) {
+        break;
+      }
+
+      if (document.body.contains(root.host)) {
+        return true;
+      }
+
+      current = root.host;
+    }
+
+    return false;
   }
 
   function findAllOccurrences(text, query) {
