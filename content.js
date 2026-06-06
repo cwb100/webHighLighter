@@ -1,6 +1,7 @@
 (function () {
   const STORE_KEY = 'webHighlighterStore';
   const TOOLBAR_ID = 'wh-toolbar-host';
+  const ACTION_MENU_ID = 'wh-action-menu-host';
   const HIGHLIGHT_ATTR = 'data-wh-id';
   const HIGHLIGHT_CLASS = 'wh-highlight';
   const COLORS = [
@@ -13,7 +14,10 @@
 
   let toolbarHost = null;
   let toolbarShadow = null;
+  let actionMenuHost = null;
+  let actionMenuShadow = null;
   let pendingRange = null;
+  let activeHighlightId = null;
   let selectionTimer = null;
 
   init();
@@ -28,8 +32,12 @@
     document.addEventListener('mouseup', scheduleToolbar, true);
     document.addEventListener('keyup', scheduleToolbar, true);
     document.addEventListener('selectionchange', scheduleToolbar, true);
+    document.addEventListener('click', handleDocumentClick, true);
+    document.addEventListener('keydown', handleDocumentKeydown, true);
     window.addEventListener('scroll', hideToolbar, true);
+    window.addEventListener('scroll', hideActionMenu, true);
     window.addEventListener('resize', hideToolbar, true);
+    window.addEventListener('resize', hideActionMenu, true);
 
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!message || typeof message !== 'object') {
@@ -56,6 +64,7 @@
         padding: 0 2px;
         box-decoration-break: clone;
         -webkit-box-decoration-break: clone;
+        cursor: pointer;
       }
 
       .${HIGHLIGHT_CLASS}:hover {
@@ -107,6 +116,11 @@
   function isWithinToolbar(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     return Boolean(element && element.closest && element.closest('#' + TOOLBAR_ID));
+  }
+
+  function isWithinActionMenu(node) {
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return Boolean(element && element.closest && element.closest('#' + ACTION_MENU_ID));
   }
 
   function selectionIntersectsHighlight(range) {
@@ -211,6 +225,226 @@
     toolbarHost.style.display = 'none';
   }
 
+  function handleDocumentClick(event) {
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+
+    if (isWithinActionMenu(target)) {
+      return;
+    }
+
+    const highlightElement = getHighlightElementFromTarget(target);
+    if (highlightElement) {
+      event.preventDefault();
+      event.stopPropagation();
+      openActionMenu(highlightElement);
+      hideToolbar();
+      clearSelection();
+      return;
+    }
+
+    hideActionMenu();
+  }
+
+  function handleDocumentKeydown(event) {
+    if (event.key === 'Escape') {
+      hideActionMenu();
+      hideToolbar();
+      clearSelection();
+    }
+  }
+
+  function getHighlightElementFromTarget(target) {
+    const element = target.nodeType === Node.ELEMENT_NODE ? target : target.parentElement;
+    if (!element || !element.closest) {
+      return null;
+    }
+
+    return element.closest(`.${HIGHLIGHT_CLASS}`);
+  }
+
+  function openActionMenu(highlightElement) {
+    const highlightId = highlightElement.getAttribute(HIGHLIGHT_ATTR);
+    if (!highlightId) {
+      return;
+    }
+
+    activeHighlightId = highlightId;
+    ensureActionMenu();
+    renderActionMenu(highlightElement);
+    positionActionMenu(highlightElement);
+    actionMenuHost.style.display = 'block';
+  }
+
+  function ensureActionMenu() {
+    if (actionMenuHost) {
+      return;
+    }
+
+    actionMenuHost = document.createElement('div');
+    actionMenuHost.id = ACTION_MENU_ID;
+    actionMenuHost.style.position = 'fixed';
+    actionMenuHost.style.zIndex = '2147483647';
+    actionMenuHost.style.display = 'none';
+
+    actionMenuShadow = actionMenuHost.attachShadow({ mode: 'open' });
+    actionMenuShadow.innerHTML = `
+      <style>
+        .panel {
+          min-width: 280px;
+          max-width: 320px;
+          padding: 12px;
+          border-radius: 14px;
+          background: #111827;
+          color: #fff;
+          box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+          font: 12px/1.4 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        .title {
+          font-size: 13px;
+          font-weight: 600;
+        }
+        .delete-btn {
+          border: 0;
+          border-radius: 10px;
+          padding: 8px 12px;
+          background: #ef4444;
+          color: #fff;
+          cursor: pointer;
+        }
+        .section {
+          margin-top: 10px;
+        }
+        .section-label {
+          display: block;
+          margin-bottom: 8px;
+          opacity: 0.8;
+        }
+        .preset-colors {
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          gap: 8px;
+        }
+        .color-btn {
+          width: 100%;
+          height: 28px;
+          border: 0;
+          border-radius: 999px;
+          cursor: pointer;
+          box-shadow: inset 0 0 0 1px rgba(255,255,255,0.25);
+        }
+        .custom-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 10px;
+        }
+        .custom-row input[type="color"] {
+          width: 42px;
+          height: 32px;
+          padding: 0;
+          border: 0;
+          background: transparent;
+          cursor: pointer;
+        }
+        .hint {
+          opacity: 0.7;
+        }
+      </style>
+      <div class="panel" part="panel">
+        <div class="row">
+          <div class="title">已高亮文本操作</div>
+          <button type="button" class="delete-btn" data-action="delete">删除</button>
+        </div>
+        <div class="section">
+          <span class="section-label">调整颜色</span>
+          <div class="preset-colors">
+            ${COLORS.map((color) => `<button type="button" class="color-btn" title="${color.name}" aria-label="${color.name}" data-color="${color.value}" style="background:${color.value}"></button>`).join('')}
+          </div>
+          <div class="custom-row">
+            <input type="color" data-action="custom-color" value="#fff59d" />
+            <span class="hint">自定义颜色</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    actionMenuShadow.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+    });
+
+    actionMenuShadow.addEventListener('click', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      const action = target.getAttribute('data-action');
+      const color = target.getAttribute('data-color');
+
+      if (action === 'delete') {
+        await deleteHighlightById(activeHighlightId);
+        return;
+      }
+
+      if (color) {
+        await updateHighlightColor(activeHighlightId, color);
+        return;
+      }
+    });
+
+    actionMenuShadow.addEventListener('change', async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) {
+        return;
+      }
+
+      if (target.getAttribute('data-action') === 'custom-color') {
+        await updateHighlightColor(activeHighlightId, target.value);
+      }
+    });
+
+    document.documentElement.appendChild(actionMenuHost);
+  }
+
+  function renderActionMenu(highlightElement) {
+    const currentColor = normalizeColorValue(highlightElement.getAttribute('data-wh-color') || highlightElement.style.backgroundColor || COLORS[0].value);
+    const colorInput = actionMenuShadow.querySelector('input[type="color"]');
+    if (colorInput instanceof HTMLInputElement && isHexColor(currentColor)) {
+      colorInput.value = currentColor;
+    }
+  }
+
+  function positionActionMenu(highlightElement) {
+    const rect = highlightElement.getBoundingClientRect();
+    const width = 320;
+    const height = 220;
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left));
+    const preferredTop = rect.bottom + 10;
+    const top = preferredTop + height > window.innerHeight ? Math.max(12, rect.top - height - 10) : preferredTop;
+
+    actionMenuHost.style.left = `${left}px`;
+    actionMenuHost.style.top = `${top}px`;
+  }
+
+  function hideActionMenu() {
+    if (!actionMenuHost) {
+      return;
+    }
+
+    actionMenuHost.style.display = 'none';
+    activeHighlightId = null;
+  }
+
   function clearSelection() {
     const selection = window.getSelection();
     if (selection) {
@@ -257,6 +491,93 @@
     document.querySelectorAll(selector).forEach((element) => {
       unwrapElement(element);
     });
+    if (activeHighlightId === highlightId) {
+      hideActionMenu();
+    }
+  }
+
+  async function deleteHighlightById(highlightId) {
+    if (!highlightId) {
+      return;
+    }
+
+    const store = await readStore();
+    const pageKey = normalizeUrl(location.href);
+    const page = store.pages[pageKey];
+    if (!page || !Array.isArray(page.highlights)) {
+      return;
+    }
+
+    page.highlights = page.highlights.filter((item) => item.id !== highlightId);
+    if (page.highlights.length === 0) {
+      delete store.pages[pageKey];
+    } else {
+      page.updatedAt = new Date().toISOString();
+      store.pages[pageKey] = page;
+    }
+
+    await writeStore(store);
+    removeHighlightFromDom(highlightId);
+    hideActionMenu();
+  }
+
+  async function updateHighlightColor(highlightId, color) {
+    if (!highlightId || !color) {
+      return;
+    }
+
+    const store = await readStore();
+    const pageKey = normalizeUrl(location.href);
+    const page = store.pages[pageKey];
+    if (!page || !Array.isArray(page.highlights)) {
+      return;
+    }
+
+    const highlight = page.highlights.find((item) => item.id === highlightId);
+    if (!highlight) {
+      return;
+    }
+
+    highlight.color = color;
+    page.updatedAt = new Date().toISOString();
+    store.pages[pageKey] = page;
+    await writeStore(store);
+    applyHighlightColorToDom(highlightId, color);
+    hideActionMenu();
+  }
+
+  function applyHighlightColorToDom(highlightId, color) {
+    const selector = `span[${HIGHLIGHT_ATTR}="${CSS.escape(highlightId)}"]`;
+    document.querySelectorAll(selector).forEach((element) => {
+      element.dataset.whColor = color;
+      element.style.backgroundColor = color;
+    });
+  }
+
+  function normalizeColorValue(color) {
+    if (!color) {
+      return COLORS[0].value;
+    }
+
+    if (color.startsWith('rgb')) {
+      return rgbToHex(color);
+    }
+
+    return color;
+  }
+
+  function isHexColor(value) {
+    return /^#[0-9a-fA-F]{6}$/.test(value);
+  }
+
+  function rgbToHex(color) {
+    const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (!match) {
+      return COLORS[0].value;
+    }
+
+    const toHex = (value) => Number(value).toString(16).padStart(2, '0');
+    return `#${toHex(match[1])}${toHex(match[2])}${toHex(match[3])}`;
   }
 
   function unwrapElement(element) {
