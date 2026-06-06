@@ -3,7 +3,11 @@
   const pageCountEl = document.getElementById('page-count');
   const highlightCountEl = document.getElementById('highlight-count');
   const refreshBtn = document.getElementById('refresh-btn');
+  const exportDataBtn = document.getElementById('export-data-btn');
+  const importDataBtn = document.getElementById('import-data-btn');
+  const importFileInput = document.getElementById('import-file-input');
   const clearSearchBtn = document.getElementById('clear-search-btn');
+  const dashboardStatus = document.getElementById('dashboard-status');
   const filterTitleInput = document.getElementById('filter-title');
   const filterUrlInput = document.getElementById('filter-url');
   const filterTextInput = document.getElementById('filter-text');
@@ -27,6 +31,9 @@
   let renderTimer = null;
 
   refreshBtn.addEventListener('click', render);
+  exportDataBtn.addEventListener('click', handleExportData);
+  importDataBtn.addEventListener('click', () => importFileInput.click());
+  importFileInput.addEventListener('change', handleImportFile);
   clearSearchBtn.addEventListener('click', handleClearFilters);
   filterTitleInput.addEventListener('input', handleFilterInput);
   filterUrlInput.addEventListener('input', handleFilterInput);
@@ -95,6 +102,53 @@
     }
 
     scheduleRender();
+  }
+
+  async function handleExportData() {
+    try {
+      const data = await webHighlighterStore.exportData();
+      const json = JSON.stringify(data, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `web-highlighter-backup-${formatToday()}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setStatus('数据已导出为 JSON 备份文件。');
+    } catch (error) {
+      console.error('Failed to export data:', error);
+      setStatus('导出失败，请稍后重试。');
+    }
+  }
+
+  async function handleImportFile(event) {
+    const file = event.target.files && event.target.files[0];
+    event.target.value = '';
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const summary = webHighlighterStore.getBackupSummary(data);
+      const confirmed = window.confirm(
+        `确认导入这个备份文件吗？\n\n页面：${summary.pageCount}\n标记：${summary.highlightCount}\n\n导入会与现有数据合并，不会清空当前数据。`
+      );
+      if (!confirmed) {
+        return;
+      }
+
+      const result = await webHighlighterStore.importData(data);
+      await render();
+      setStatus(`导入完成：新增 ${result.importedHighlights} 条标记，跳过 ${result.skippedHighlights} 条重复标记。`);
+    } catch (error) {
+      console.error('Failed to import data:', error);
+      setStatus('导入失败，请确认选择的是 Web Highlighter JSON 备份文件。');
+    }
   }
 
   function scheduleRender() {
@@ -319,6 +373,14 @@
 
   function normalizeSearchValue(value) {
     return String(value || '').trim().toLowerCase();
+  }
+
+  function formatToday() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function setStatus(message) {
+    dashboardStatus.textContent = message;
   }
 
   function normalizeUrl(url) {

@@ -62,6 +62,13 @@ async function handleStoreRequest(message) {
       }
       return highlight;
     }
+    case 'exportData':
+      return webHighlighterStore.exportData();
+    case 'importData': {
+      const result = await webHighlighterStore.importData(payload.data);
+      await broadcastStoreUpdated('', 'import');
+      return result;
+    }
     default:
       throw new Error(`Unsupported store action: ${action}`);
   }

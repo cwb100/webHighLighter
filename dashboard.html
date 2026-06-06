@@ -13,7 +13,10 @@
       <p>查看所有已划线网页和对应标记</p>
     </div>
     <div class="header-actions">
+      <button id="export-data-btn" type="button">导出数据</button>
+      <button id="import-data-btn" type="button">导入数据</button>
       <button id="refresh-btn" type="button">刷新</button>
+      <input id="import-file-input" type="file" accept="application/json,.json" hidden>
     </div>
   </header>
 
@@ -47,7 +50,7 @@
         </label>
       </div>
 
-      <div class="search-help">
+      <div id="dashboard-status" class="search-help" aria-live="polite">
         点击标记可在新标签页打开对应网页；筛选条件为空时会被忽略，多个条件会同时生效。
       </div>
     </section>

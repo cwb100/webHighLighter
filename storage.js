@@ -3,6 +3,7 @@
   const DB_VERSION = 1;
   const META_MIGRATION_KEY = 'legacy-migration-complete';
   const LEGACY_STORE_KEY = 'webHighlighterStore';
+  const BACKUP_SCHEMA_VERSION = 1;
 
   let dbPromise = null;
   let migrationPromise = null;
@@ -15,7 +16,10 @@
     updateHighlightColor,
     deleteHighlight,
     clearPage,
-    getPage
+    getPage,
+    exportData,
+    importData,
+    getBackupSummary
   };
 
   globalThis.webHighlighterStore = api;
@@ -161,6 +165,84 @@
     await txComplete(tx);
 
     return highlights.map((item) => item.id);
+  }
+
+  async function exportData() {
+    const db = await openDatabase();
+    const pages = await readAll(db, 'pages');
+    const highlights = await readAll(db, 'highlights');
+    const meta = await readAll(db, 'meta');
+
+    return {
+      appName: 'Web Highlighter',
+      schemaVersion: BACKUP_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      pages,
+      highlights,
+      meta
+    };
+  }
+
+  async function importData(data) {
+    const normalized = normalizeBackupData(data);
+    const db = await openDatabase();
+    const existingPages = await readAll(db, 'pages');
+    const existingHighlights = await readAll(db, 'highlights');
+    const existingHighlightIds = new Set(existingHighlights.map((highlight) => highlight.id));
+    const highlightMap = new Map();
+
+    for (const highlight of existingHighlights) {
+      if (isValidHighlight(highlight)) {
+        highlightMap.set(highlight.id, highlight);
+      }
+    }
+
+    let importedHighlights = 0;
+    let skippedHighlights = 0;
+    for (const highlight of normalized.highlights) {
+      if (existingHighlightIds.has(highlight.id)) {
+        skippedHighlights += 1;
+        continue;
+      }
+      highlightMap.set(highlight.id, highlight);
+      importedHighlights += 1;
+    }
+
+    const nextHighlights = Array.from(highlightMap.values());
+    const nextPages = mergePages(existingPages.concat(normalized.pages), nextHighlights);
+    const tx = db.transaction(['pages', 'highlights'], 'readwrite');
+    const pageStore = tx.objectStore('pages');
+    const highlightStore = tx.objectStore('highlights');
+
+    for (const page of nextPages) {
+      await requestToPromise(pageStore.put(page));
+    }
+
+    for (const highlight of normalized.highlights) {
+      if (!existingHighlightIds.has(highlight.id)) {
+        await requestToPromise(highlightStore.put(highlight));
+      }
+    }
+
+    await txComplete(tx);
+
+    return {
+      importedPages: nextPages.length,
+      importedHighlights,
+      skippedHighlights,
+      totalPages: nextPages.length,
+      totalHighlights: nextHighlights.length
+    };
+  }
+
+  function getBackupSummary(data) {
+    const normalized = normalizeBackupData(data);
+    return {
+      schemaVersion: normalized.schemaVersion,
+      pageCount: normalized.pages.length,
+      highlightCount: normalized.highlights.length,
+      exportedAt: normalized.exportedAt || ''
+    };
   }
 
   async function openDatabase() {
@@ -327,6 +409,111 @@
       map.get(pageUrl).push(highlight);
     }
     return map;
+  }
+
+  function normalizeBackupData(data) {
+    if (!data || typeof data !== 'object') {
+      throw new Error('Backup file must contain a JSON object');
+    }
+
+    const pages = Array.isArray(data.pages) ? data.pages.map(normalizeBackupPage).filter(Boolean) : [];
+    const highlights = Array.isArray(data.highlights)
+      ? data.highlights.map(normalizeBackupHighlight).filter(Boolean)
+      : [];
+
+    if (pages.length === 0 && highlights.length === 0) {
+      throw new Error('Backup file does not contain pages or highlights');
+    }
+
+    return {
+      schemaVersion: Number(data.schemaVersion) || BACKUP_SCHEMA_VERSION,
+      exportedAt: typeof data.exportedAt === 'string' ? data.exportedAt : '',
+      pages,
+      highlights
+    };
+  }
+
+  function normalizeBackupPage(page) {
+    if (!page || typeof page !== 'object' || !page.url) {
+      return null;
+    }
+
+    const url = normalizePageUrl(page.url);
+    return {
+      url,
+      title: page.title || url,
+      updatedAt: isIsoDate(page.updatedAt) ? page.updatedAt : new Date().toISOString(),
+      highlightCount: typeof page.highlightCount === 'number' ? Math.max(0, page.highlightCount) : 0
+    };
+  }
+
+  function normalizeBackupHighlight(highlight) {
+    if (!isValidHighlight(highlight)) {
+      return null;
+    }
+
+    const pageUrl = normalizePageUrl(highlight.pageUrl);
+    return {
+      ...highlight,
+      pageUrl,
+      pageTitle: highlight.pageTitle || pageUrl
+    };
+  }
+
+  function isValidHighlight(highlight) {
+    return Boolean(
+      highlight &&
+      typeof highlight === 'object' &&
+      typeof highlight.id === 'string' &&
+      highlight.id &&
+      typeof highlight.pageUrl === 'string' &&
+      highlight.pageUrl &&
+      typeof highlight.quote === 'string'
+    );
+  }
+
+  function mergePages(importedPages, highlights) {
+    const importedPageMap = new Map();
+    for (const page of importedPages) {
+      importedPageMap.set(page.url, page);
+    }
+
+    const highlightMap = groupHighlightsByPage(highlights);
+    const pages = [];
+    const now = new Date().toISOString();
+
+    for (const [pageUrl, pageHighlights] of highlightMap.entries()) {
+      if (!pageUrl || pageHighlights.length === 0) {
+        continue;
+      }
+
+      const importedPage = importedPageMap.get(pageUrl);
+      const latestHighlightTime = pageHighlights
+        .map((highlight) => highlight.updatedAt || highlight.createdAt || '')
+        .filter(Boolean)
+        .sort()
+        .pop();
+
+      pages.push({
+        url: pageUrl,
+        title: importedPage ? importedPage.title : (pageHighlights[0].pageTitle || pageUrl),
+        updatedAt: maxDate(importedPage && importedPage.updatedAt, latestHighlightTime, now),
+        highlightCount: pageHighlights.length
+      });
+    }
+
+    return pages;
+  }
+
+  function maxDate(...values) {
+    return values
+      .filter(isIsoDate)
+      .sort()
+      .pop() || new Date().toISOString();
+  }
+
+  function isIsoDate(value) {
+    return typeof value === 'string' && !Number.isNaN(new Date(value).getTime());
   }
 
   function byStart(left, right) {
