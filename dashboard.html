@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Web Highlighter Console</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="header">
+    <div>
+      <h1>Web Highlighter Console</h1>
+      <p>查看所有已划线网页和对应标记</p>
+    </div>
+    <div class="header-actions">
+      <button id="refresh-btn" type="button">刷新</button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="summary">
+      <div class="summary-card">
+        <span class="summary-label">网页数量</span>
+        <strong id="page-count">0</strong>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">标记总数</span>
+        <strong id="highlight-count">0</strong>
+      </div>
+    </section>
+
+    <section id="pages" class="pages"></section>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>
