@@ -47,6 +47,67 @@ body {
   padding: 24px 28px 32px;
 }
 
+.search-card {
+  margin-bottom: 24px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(17, 24, 39, 0.06);
+}
+
+.search-label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.search-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.search-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+}
+
+.search-row input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.search-row button {
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.search-help {
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.search-help code {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #111827;
+}
+
 .summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

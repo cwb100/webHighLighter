@@ -1,9 +1,9 @@
 (function () {
-  const STORE_KEY = 'webHighlighterStore';
   const TOOLBAR_ID = 'wh-toolbar-host';
   const ACTION_MENU_ID = 'wh-action-menu-host';
   const HIGHLIGHT_ATTR = 'data-wh-id';
   const HIGHLIGHT_CLASS = 'wh-highlight';
+  const STORE_REQUEST_EVENT = 'WH_STORE_REQUEST';
   const COLORS = [
     { name: 'Yellow', value: '#fff59d' },
     { name: 'Green', value: '#c8e6c9' },
@@ -24,7 +24,9 @@
 
   function init() {
     injectStyles();
-    restoreHighlights();
+    void restoreHighlights().catch((error) => {
+      console.error('Failed to restore highlights:', error);
+    });
     bindEvents();
   }
 
@@ -475,7 +477,11 @@
     };
 
     wrapRangeByTextNodes(range, id, color);
-    await saveHighlight(record);
+    const page = {
+      url: normalizeUrl(location.href),
+      title: document.title
+    };
+    await saveHighlight(page, record);
   }
 
   function wrapRangeByTextNodes(range, id, color) {
@@ -578,24 +584,15 @@
       return;
     }
 
-    const store = await readStore();
     const pageKey = normalizeUrl(location.href);
-    const page = store.pages[pageKey];
-    if (!page || !Array.isArray(page.highlights)) {
-      return;
+    const removed = await callStore('deleteHighlight', {
+      pageUrl: pageKey,
+      highlightId
+    });
+    if (removed) {
+      removeHighlightFromDom(highlightId);
+      hideActionMenu();
     }
-
-    page.highlights = page.highlights.filter((item) => item.id !== highlightId);
-    if (page.highlights.length === 0) {
-      delete store.pages[pageKey];
-    } else {
-      page.updatedAt = new Date().toISOString();
-      store.pages[pageKey] = page;
-    }
-
-    await writeStore(store);
-    removeHighlightFromDom(highlightId);
-    hideActionMenu();
   }
 
   async function updateHighlightColor(highlightId, color) {
@@ -603,24 +600,16 @@
       return;
     }
 
-    const store = await readStore();
     const pageKey = normalizeUrl(location.href);
-    const page = store.pages[pageKey];
-    if (!page || !Array.isArray(page.highlights)) {
-      return;
+    const highlight = await callStore('updateHighlightColor', {
+      pageUrl: pageKey,
+      highlightId,
+      color
+    });
+    if (highlight) {
+      applyHighlightColorToDom(highlightId, color);
+      hideActionMenu();
     }
-
-    const highlight = page.highlights.find((item) => item.id === highlightId);
-    if (!highlight) {
-      return;
-    }
-
-    highlight.color = color;
-    page.updatedAt = new Date().toISOString();
-    store.pages[pageKey] = page;
-    await writeStore(store);
-    applyHighlightColorToDom(highlightId, color);
-    hideActionMenu();
   }
 
   function applyHighlightColorToDom(highlightId, color) {
@@ -673,13 +662,13 @@
   }
 
   async function restoreHighlights() {
-    const store = await readStore();
-    const page = store.pages && store.pages[normalizeUrl(location.href)];
-    if (!page || !Array.isArray(page.highlights) || page.highlights.length === 0) {
+    const highlights = await callStore('getHighlightsForPage', {
+      pageUrl: normalizeUrl(location.href)
+    });
+    if (!Array.isArray(highlights) || highlights.length === 0) {
       return;
     }
 
-    const highlights = [...page.highlights].sort((left, right) => left.start - right.start);
     for (const record of highlights) {
       const range = findRangeForRecord(record);
       if (!range) {
@@ -927,27 +916,37 @@
     return positions;
   }
 
-  async function saveHighlight(record) {
-    const store = await readStore();
-    const pageKey = normalizeUrl(location.href);
-    const page = store.pages[pageKey] || {
-      url: pageKey,
-      title: document.title,
-      updatedAt: new Date().toISOString(),
-      highlights: []
-    };
+  async function saveHighlight(page, record) {
+    await callStore('saveHighlight', {
+      page,
+      highlight: record
+    });
+  }
 
-    const existingIndex = page.highlights.findIndex((item) => item.id === record.id);
-    if (existingIndex >= 0) {
-      page.highlights[existingIndex] = record;
-    } else {
-      page.highlights.push(record);
-    }
+  function callStore(action, payload) {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: STORE_REQUEST_EVENT,
+          action,
+          payload
+        },
+        (response) => {
+          const error = chrome.runtime.lastError;
+          if (error) {
+            reject(new Error(error.message));
+            return;
+          }
 
-    page.title = document.title;
-    page.updatedAt = new Date().toISOString();
-    store.pages[pageKey] = page;
-    await writeStore(store);
+          if (!response || response.ok !== true) {
+            reject(new Error(response && response.error ? response.error : 'Store request failed'));
+            return;
+          }
+
+          resolve(response.result);
+        }
+      );
+    });
   }
 
   function normalizeUrl(url) {
@@ -965,29 +964,5 @@
       return crypto.randomUUID();
     }
     return `wh-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-
-  function readStore() {
-    return new Promise((resolve) => {
-      chrome.storage.local.get(STORE_KEY, (result) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          console.error('Failed to read highlight store:', error);
-        }
-        resolve(result[STORE_KEY] || { pages: {} });
-      });
-    });
-  }
-
-  function writeStore(store) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set({ [STORE_KEY]: store }, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          console.error('Failed to write highlight store:', error);
-        }
-        resolve();
-      });
-    });
   }
 })();

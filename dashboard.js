@@ -1,31 +1,84 @@
 (function () {
-  const STORE_KEY = 'webHighlighterStore';
-
   const pagesEl = document.getElementById('pages');
   const pageCountEl = document.getElementById('page-count');
   const highlightCountEl = document.getElementById('highlight-count');
   const refreshBtn = document.getElementById('refresh-btn');
+  const searchInput = document.getElementById('search-input');
+  const clearSearchBtn = document.getElementById('clear-search-btn');
+  const STORE_UPDATED_EVENT = 'WH_STORE_UPDATED';
+
+  const SEARCHABLE_TAGS = new Set(['title', 'url', 'text', 'color', 'date']);
+  const DEFAULT_SEARCH_FIELDS = ['title', 'url', 'text'];
+  const EMPTY_HTML = '<div class="empty">还没有任何网页被划线。</div>';
+  const NO_MATCH_HTML = '<div class="empty">没有匹配的标记。</div>';
+  const LOAD_ERROR_HTML = '<div class="empty">加载划线数据失败。</div>';
+  const EMPTY_PAGE_HIGHLIGHTS_HTML = '<div class="empty">这一页还没有具体标记。</div>';
+
+  let queryText = '';
+  let renderTimer = null;
 
   refreshBtn.addEventListener('click', render);
+  searchInput.addEventListener('input', handleSearchInput);
+  clearSearchBtn.addEventListener('click', handleClearSearch);
+  chrome.runtime.onMessage.addListener(handleRuntimeMessage);
   render();
 
-  function render() {
-    readStore().then((store) => {
-      const pages = Object.values(store.pages || {}).sort((left, right) => {
-        return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
-      });
+  async function render() {
+    try {
+      const pages = await webHighlighterStore.getPagesWithHighlights();
+      const filteredPages = filterPages(pages, parseQuery(queryText));
 
-      pageCountEl.textContent = String(pages.length);
-      highlightCountEl.textContent = String(pages.reduce((sum, page) => sum + (Array.isArray(page.highlights) ? page.highlights.length : 0), 0));
+      pageCountEl.textContent = String(filteredPages.length);
+      highlightCountEl.textContent = String(
+        filteredPages.reduce((sum, page) => sum + (Array.isArray(page.highlights) ? page.highlights.length : 0), 0)
+      );
 
       if (pages.length === 0) {
-        pagesEl.innerHTML = '<div class="empty">还没有任何网页被划线。</div>';
+        pagesEl.innerHTML = EMPTY_HTML;
         return;
       }
 
-      pagesEl.innerHTML = pages.map(renderPageCard).join('');
-      bindActions(store);
-    });
+      if (filteredPages.length === 0) {
+        pagesEl.innerHTML = NO_MATCH_HTML;
+        return;
+      }
+
+      pagesEl.innerHTML = filteredPages.map(renderPageCard).join('');
+      bindActions();
+    } catch (error) {
+      console.error('Failed to load dashboard data:', error);
+      pagesEl.innerHTML = LOAD_ERROR_HTML;
+    }
+  }
+
+  function handleSearchInput(event) {
+    queryText = event.target.value || '';
+    scheduleRender();
+  }
+
+  function handleClearSearch() {
+    queryText = '';
+    searchInput.value = '';
+    scheduleRender();
+  }
+
+  function handleRuntimeMessage(message) {
+    if (!message || message.type !== STORE_UPDATED_EVENT) {
+      return;
+    }
+
+    scheduleRender();
+  }
+
+  function scheduleRender() {
+    if (renderTimer) {
+      window.clearTimeout(renderTimer);
+    }
+
+    renderTimer = window.setTimeout(() => {
+      renderTimer = null;
+      render();
+    }, 60);
   }
 
   function renderPageCard(page) {
@@ -41,7 +94,7 @@
         </div>
 
         <div class="highlight-list">
-          ${highlights.length > 0 ? highlights.map((highlight) => renderHighlightItem(page.url, highlight)).join('') : '<div class="empty">这一页还没有具体标记。</div>'}
+          ${highlights.length > 0 ? highlights.map((highlight) => renderHighlightItem(page.url, highlight)).join('') : EMPTY_PAGE_HIGHLIGHTS_HTML}
         </div>
 
         <div class="page-actions">
@@ -52,6 +105,7 @@
   }
 
   function renderHighlightItem(pageKey, highlight) {
+    const createdDate = formatHighlightDate(highlight.createdAt);
     return `
       <div class="highlight-item" data-highlight-id="${escapeHtml(highlight.id)}" data-page-key="${escapeHtml(pageKey)}">
         <div class="highlight-main">
@@ -59,6 +113,7 @@
           <div class="highlight-sub">
             <span class="swatch" style="background:${escapeHtml(highlight.color || '#fff59d')}"></span>
             <span>${escapeHtml(highlight.color || '')}</span>
+            ${createdDate ? `<span>${escapeHtml(createdDate)}</span>` : ''}
           </div>
         </div>
         <div class="item-actions">
@@ -68,7 +123,7 @@
     `;
   }
 
-  function bindActions(currentStore) {
+  function bindActions() {
     document.querySelectorAll('[data-delete-highlight]').forEach((button) => {
       button.addEventListener('click', async () => {
         const pageKey = button.getAttribute('data-page-key');
@@ -92,36 +147,19 @@
   }
 
   async function removeHighlight(pageKey, highlightId) {
-    const store = await readStore();
-    const page = store.pages[pageKey];
-    if (!page) {
-      return;
+    const removed = await webHighlighterStore.deleteHighlight(pageKey, highlightId);
+    if (removed) {
+      await notifyOpenTabs(pageKey, highlightId);
+      render();
     }
-
-    page.highlights = page.highlights.filter((item) => item.id !== highlightId);
-    if (page.highlights.length === 0) {
-      delete store.pages[pageKey];
-    } else {
-      page.updatedAt = new Date().toISOString();
-      store.pages[pageKey] = page;
-    }
-
-    await writeStore(store);
-    await notifyOpenTabs(pageKey, highlightId);
-    render();
   }
 
   async function clearPage(pageKey) {
-    const store = await readStore();
-    if (!store.pages[pageKey]) {
-      return;
+    const removedIds = await webHighlighterStore.clearPage(pageKey);
+    if (Array.isArray(removedIds)) {
+      await notifyOpenTabs(pageKey, null, removedIds);
+      render();
     }
-
-    const removedIds = store.pages[pageKey].highlights.map((item) => item.id);
-    delete store.pages[pageKey];
-    await writeStore(store);
-    await notifyOpenTabs(pageKey, null, removedIds);
-    render();
   }
 
   async function notifyOpenTabs(pageKey, highlightId, removedIds) {
@@ -159,28 +197,104 @@
     });
   }
 
-  function readStore() {
-    return new Promise((resolve) => {
-      chrome.storage.local.get(STORE_KEY, (result) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          console.error('Failed to read highlight store:', error);
-        }
-        resolve(result[STORE_KEY] || { pages: {} });
-      });
-    });
+  function parseQuery(query) {
+    const terms = String(query || '')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(parseTerm)
+      .filter((term) => term && term.value);
+
+    return { terms };
   }
 
-  function writeStore(store) {
-    return new Promise((resolve) => {
-      chrome.storage.local.set({ [STORE_KEY]: store }, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          console.error('Failed to write highlight store:', error);
-        }
-        resolve();
+  function parseTerm(token) {
+    const separatorIndex = token.indexOf(':');
+    if (separatorIndex <= 0) {
+      return createDefaultTerm(token);
+    }
+
+    const field = token.slice(0, separatorIndex).toLowerCase();
+    const rawValue = token.slice(separatorIndex + 1);
+
+    if (!SEARCHABLE_TAGS.has(field) || !rawValue.trim()) {
+      return createDefaultTerm(token);
+    }
+
+    return {
+      type: 'field',
+      field,
+      value: normalizeSearchValue(rawValue)
+    };
+  }
+
+  function createDefaultTerm(value) {
+    return {
+      type: 'default',
+      fields: DEFAULT_SEARCH_FIELDS,
+      value: normalizeSearchValue(value)
+    };
+  }
+
+  function filterPages(pages, query) {
+    if (!query.terms.length) {
+      return pages;
+    }
+
+    const results = [];
+    for (const page of pages) {
+      const highlights = filterHighlightsForPage(page, query.terms);
+      if (highlights.length === 0) {
+        continue;
+      }
+
+      results.push({
+        ...page,
+        highlights
       });
-    });
+    }
+    return results;
+  }
+
+  function filterHighlightsForPage(page, terms) {
+    const highlights = Array.isArray(page.highlights) ? page.highlights : [];
+    return highlights.filter((highlight) => terms.every((term) => matchesTerm(page, highlight, term)));
+  }
+
+  function matchesTerm(page, highlight, term) {
+    if (term.type === 'default') {
+      return term.fields.some((field) => matchFieldValue(page, highlight, field, term.value));
+    }
+
+    return matchFieldValue(page, highlight, term.field, term.value);
+  }
+
+  function matchFieldValue(page, highlight, field, value) {
+    switch (field) {
+      case 'title':
+        return normalizeSearchValue(page.title).includes(value);
+      case 'url':
+        return normalizeSearchValue(page.url).includes(value);
+      case 'text':
+        return normalizeSearchValue(highlight.quote).includes(value);
+      case 'color':
+        return normalizeSearchValue(highlight.color).includes(value);
+      case 'date':
+        return formatHighlightDate(highlight.createdAt) === value;
+      default:
+        return false;
+    }
+  }
+
+  function formatHighlightDate(value) {
+    if (typeof value !== 'string' || value.length < 10) {
+      return '';
+    }
+    return value.slice(0, 10);
+  }
+
+  function normalizeSearchValue(value) {
+    return String(value || '').trim().toLowerCase();
   }
 
   function normalizeUrl(url) {

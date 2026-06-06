@@ -18,6 +18,17 @@
   </header>
 
   <main class="main">
+    <section class="search-card">
+      <label class="search-label" for="search-input">搜索标记</label>
+      <div class="search-row">
+        <input id="search-input" type="search" placeholder="title:文章 url:example.com text:重点 color:#fff59d date:2026-06-06" autocomplete="off">
+        <button id="clear-search-btn" type="button">清空</button>
+      </div>
+      <div class="search-help">
+        支持标签：<code>title:</code> <code>url:</code> <code>text:</code> <code>color:</code> <code>date:</code>，不带标签时默认同时匹配标题、URL 和划线文本。
+      </div>
+    </section>
+
     <section class="summary">
       <div class="summary-card">
         <span class="summary-label">网页数量</span>
@@ -32,6 +43,7 @@
     <section id="pages" class="pages"></section>
   </main>
 
+  <script src="storage.js"></script>
   <script src="dashboard.js"></script>
 </body>
 </html>

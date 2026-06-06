@@ -12,10 +12,13 @@
 - 支持预设颜色和自定义颜色
 - 支持删除单条标记或清空整页标记
 - 提供独立控制台，查看所有已划线网页和对应标记
+- 数据存储在浏览器的 IndexedDB 中，适合长期积累大量标记
+- 首次升级后会自动迁移旧的本地存储数据
 
 ## 项目结构
 
 - `manifest.json`：扩展配置
+- `storage.js`：IndexedDB 存储与迁移逻辑
 - `content.js`：网页内高亮与恢复逻辑
 - `background.js`：点击扩展图标时打开控制台
 - `dashboard.html` / `dashboard.js` / `dashboard.css`：独立管理页
