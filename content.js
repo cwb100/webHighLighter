@@ -2,11 +2,15 @@
   const TOOLBAR_ID = 'wh-toolbar-host';
   const ACTION_MENU_ID = 'wh-action-menu-host';
   const RAIL_ID = 'wh-rail-host';
+  const RAIL_TOOLTIP_ID = 'wh-rail-tooltip-host';
   const HIGHLIGHT_ATTR = 'data-wh-id';
   const HIGHLIGHT_CLASS = 'wh-highlight';
   const STORE_REQUEST_EVENT = 'WH_STORE_REQUEST';
   const RESTORE_RETRY_LIMIT = 10;
   const RAIL_GROUP_GAP = 10;
+  const RAIL_TOOLTIP_SINGLE_LIMIT = 80;
+  const RAIL_TOOLTIP_GROUP_LIMIT = 50;
+  const RAIL_TOOLTIP_GROUP_ITEMS = 4;
   const COLORS = [
     { name: 'Yellow', value: '#fff59d' },
     { name: 'Green', value: '#c8e6c9' },
@@ -21,6 +25,7 @@
   let actionMenuShadow = null;
   let railHost = null;
   let railMarkersEl = null;
+  let railTooltipEl = null;
   let pendingRange = null;
   let activeHighlightId = null;
   let selectionTimer = null;
@@ -528,7 +533,11 @@
       return;
     }
 
-    domObserver = new MutationObserver(() => {
+    domObserver = new MutationObserver((records) => {
+      if (records.every(isExtensionMutation)) {
+        return;
+      }
+
       scheduleRestore(200, false);
       scheduleRailRender();
     });
@@ -538,6 +547,24 @@
       subtree: true,
       characterData: true
     });
+  }
+
+  function isExtensionMutation(record) {
+    if (isExtensionNode(record.target)) {
+      return true;
+    }
+
+    const changedNodes = [...record.addedNodes, ...record.removedNodes];
+    return changedNodes.length > 0 && changedNodes.every(isExtensionNode);
+  }
+
+  function isExtensionNode(node) {
+    if (!node) {
+      return false;
+    }
+
+    const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return Boolean(element && element.closest && element.closest(`#${TOOLBAR_ID}, #${ACTION_MENU_ID}, #${RAIL_ID}, #${RAIL_TOOLTIP_ID}`));
   }
 
   function handleVisibilityChange() {
@@ -862,11 +889,13 @@
       return;
     }
 
+    hideMarkerTooltip();
     railMarkersEl.innerHTML = '';
     railHost.style.display = 'none';
   }
 
   function renderMarkerRail() {
+    hideMarkerTooltip();
     const entries = collectMarkerEntries();
     if (entries.length === 0) {
       clearMarkerRail();
@@ -917,6 +946,7 @@
       entries.push({
         highlightId,
         color,
+        text: getHighlightText(highlightId),
         offset: getElementDocumentOffset(firstElement)
       });
     }
@@ -934,6 +964,15 @@
     return elements
       .slice()
       .sort((left, right) => getElementDocumentOffset(left) - getElementDocumentOffset(right))[0];
+  }
+
+  function getHighlightText(highlightId) {
+    const text = getHighlightElementsById(highlightId)
+      .slice()
+      .sort((left, right) => getElementDocumentOffset(left) - getElementDocumentOffset(right))
+      .map((element) => element.textContent || '')
+      .join('');
+    return normalizeTooltipText(text);
   }
 
   function groupMarkerEntries(entries, railHeight) {
@@ -972,7 +1011,7 @@
     marker.type = 'button';
     marker.className = isGrouped ? 'wh-rail-marker grouped' : 'wh-rail-marker';
     marker.setAttribute('data-highlight-id', first.highlightId);
-    marker.title = isGrouped ? `${group.entries.length} 条标记` : '跳转到标记';
+    marker.setAttribute('aria-label', createMarkerAriaLabel(group.entries, isGrouped));
     marker.style.position = 'absolute';
     marker.style.left = '50%';
     marker.style.top = `${group.topPx}px`;
@@ -990,6 +1029,7 @@
     marker.style.margin = '0';
     marker.style.display = 'block';
     marker.style.backgroundClip = 'padding-box';
+    marker.style.overflow = 'visible';
 
     if (isGrouped) {
       marker.textContent = String(group.entries.length);
@@ -998,13 +1038,133 @@
       marker.style.textAlign = 'center';
     }
 
+    marker.addEventListener('mouseenter', () => {
+      showMarkerTooltip(marker, group.entries, isGrouped);
+    });
+    marker.addEventListener('mouseleave', hideMarkerTooltip);
+    marker.addEventListener('focus', () => {
+      showMarkerTooltip(marker, group.entries, isGrouped);
+    });
+    marker.addEventListener('blur', hideMarkerTooltip);
     marker.addEventListener('pointerdown', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      hideMarkerTooltip();
       scrollToHighlight(first.highlightId);
     });
 
     return marker;
+  }
+
+  function showMarkerTooltip(marker, entries, isGrouped) {
+    const tooltip = ensureMarkerTooltip();
+    tooltip.innerHTML = '';
+    tooltip.style.width = isGrouped ? '260px' : '220px';
+    tooltip.style.maxWidth = 'min(260px, calc(100vw - 72px))';
+
+    fillMarkerTooltip(tooltip, entries, isGrouped);
+    tooltip.style.display = 'block';
+    tooltip.style.visibility = 'hidden';
+    tooltip.style.opacity = '0';
+
+    const markerRect = marker.getBoundingClientRect();
+    const tooltipWidth = tooltip.offsetWidth;
+    const tooltipHeight = tooltip.offsetHeight;
+    const top = clamp(markerRect.top + markerRect.height / 2 - tooltipHeight / 2, 8, window.innerHeight - tooltipHeight - 8);
+    const left = clamp(markerRect.left - tooltipWidth - 10, 8, window.innerWidth - tooltipWidth - 8);
+
+    tooltip.style.top = `${top}px`;
+    tooltip.style.left = `${left}px`;
+    tooltip.style.visibility = 'visible';
+    tooltip.style.opacity = '1';
+  }
+
+  function hideMarkerTooltip() {
+    if (!railTooltipEl) {
+      return;
+    }
+
+    railTooltipEl.style.opacity = '0';
+    railTooltipEl.style.visibility = 'hidden';
+    railTooltipEl.style.display = 'none';
+  }
+
+  function ensureMarkerTooltip() {
+    if (railTooltipEl) {
+      return railTooltipEl;
+    }
+
+    railTooltipEl = document.createElement('div');
+    railTooltipEl.id = RAIL_TOOLTIP_ID;
+    railTooltipEl.style.position = 'fixed';
+    railTooltipEl.style.padding = '8px 10px';
+    railTooltipEl.style.border = '1px solid rgba(17, 24, 39, 0.12)';
+    railTooltipEl.style.borderRadius = '10px';
+    railTooltipEl.style.background = 'rgba(17, 24, 39, 0.94)';
+    railTooltipEl.style.boxShadow = '0 10px 28px rgba(17, 24, 39, 0.28)';
+    railTooltipEl.style.color = '#ffffff';
+    railTooltipEl.style.font = '500 12px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    railTooltipEl.style.textAlign = 'left';
+    railTooltipEl.style.whiteSpace = 'normal';
+    railTooltipEl.style.wordBreak = 'break-word';
+    railTooltipEl.style.pointerEvents = 'none';
+    railTooltipEl.style.opacity = '0';
+    railTooltipEl.style.visibility = 'hidden';
+    railTooltipEl.style.display = 'none';
+    railTooltipEl.style.transition = 'opacity 90ms ease';
+    railTooltipEl.style.zIndex = '2147483647';
+    document.documentElement.appendChild(railTooltipEl);
+    return railTooltipEl;
+  }
+
+  function fillMarkerTooltip(tooltip, entries, isGrouped) {
+    if (!isGrouped) {
+      tooltip.textContent = truncateTooltipText(entries[0] && entries[0].text, RAIL_TOOLTIP_SINGLE_LIMIT);
+      return;
+    }
+
+    const title = document.createElement('span');
+    title.textContent = `${entries.length} 条标记`;
+    title.style.display = 'block';
+    title.style.marginBottom = '5px';
+    title.style.color = 'rgba(255, 255, 255, 0.72)';
+    title.style.font = '700 11px/1.2 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    tooltip.appendChild(title);
+
+    entries.slice(0, RAIL_TOOLTIP_GROUP_ITEMS).forEach((entry, index) => {
+      const item = document.createElement('span');
+      item.textContent = `${index + 1}. ${truncateTooltipText(entry.text, RAIL_TOOLTIP_GROUP_LIMIT)}`;
+      item.style.display = 'block';
+      item.style.marginTop = index === 0 ? '0' : '3px';
+      tooltip.appendChild(item);
+    });
+
+    if (entries.length > RAIL_TOOLTIP_GROUP_ITEMS) {
+      const more = document.createElement('span');
+      more.textContent = `... 还有 ${entries.length - RAIL_TOOLTIP_GROUP_ITEMS} 条`;
+      more.style.display = 'block';
+      more.style.marginTop = '4px';
+      more.style.color = 'rgba(255, 255, 255, 0.72)';
+      tooltip.appendChild(more);
+    }
+  }
+
+  function createMarkerAriaLabel(entries, isGrouped) {
+    const firstText = truncateTooltipText(entries[0] && entries[0].text, RAIL_TOOLTIP_GROUP_LIMIT);
+    return isGrouped ? `${entries.length} 条标记：${firstText}` : `标记：${firstText}`;
+  }
+
+  function truncateTooltipText(text, limit) {
+    const normalized = normalizeTooltipText(text);
+    if (normalized.length <= limit) {
+      return normalized;
+    }
+    return normalized.slice(0, Math.max(0, limit - 3)).trimEnd() + '...';
+  }
+
+  function normalizeTooltipText(text) {
+    const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+    return normalized || '标记内容为空';
   }
 
   function scrollToHighlight(highlightId) {
