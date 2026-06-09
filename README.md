@@ -1,5 +1,7 @@
 # Web Highlighter
 
+[English](./README.en.md) | 中文
+
 一个用于 Chrome / Edge 的网页划线扩展，支持在网页中高亮文本、持久化保存、恢复高亮，并通过独立 dashboard 管理所有标记。
 ![alt text](./assets/image1.png)
 
@@ -87,4 +89,4 @@
 
 ## 维护
 
-- 功能、交互、存储方案或兼容性发生变化时，README 会同步更新
+- 功能、交互、存储方案或兼容性发生变化时，中文和英文 README 会同步更新
