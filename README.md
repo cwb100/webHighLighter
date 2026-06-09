@@ -53,6 +53,7 @@
 - `storage.js`：IndexedDB 存储层、旧数据迁移、备份导出与导入逻辑
 - `content.js`：网页内高亮、恢复、动态页面监听与页面交互逻辑
 - `dashboard.html` / `dashboard.js` / `dashboard.css`：独立管理页
+- `icons/`：扩展图标资源，用于浏览器工具栏、扩展列表和商店包
 
 ## 安装方式
 
